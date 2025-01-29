@@ -466,7 +466,7 @@ fn extract_many(
     ascii_case_insensitive: bool,
     overlapping: bool,
 ) -> PolarsResult<Column> {
-    _check_same_length(s, "extract_many")?; // TODO: Why it check the length
+    // _check_same_length(s, "extract_many")?; // TODO: Why it check the length
     let ca = s[0].str()?;
     let patterns = &s[1];
 
