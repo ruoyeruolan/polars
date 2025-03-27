@@ -220,7 +220,11 @@ def test_collapse_joins() -> None:
     e = inner_join.explain()
     assert "INNER JOIN" in e
     assert "FILTER" not in e
-    assert_frame_equal(inner_join.collect(collapse_joins=False), inner_join.collect())
+    assert_frame_equal(
+        inner_join.collect(collapse_joins=False),
+        inner_join.collect(),
+        check_row_order=False,
+    )
 
     inner_join = cross.filter(pl.col.x == pl.col.a)
     e = inner_join.explain()
@@ -329,45 +333,3 @@ def test_collapse_joins_combinations() -> None:
                     print()
 
                     raise
-
-
-def test_select_after_join_where_20831() -> None:
-    left = pl.LazyFrame(
-        {
-            "a": [1, 2, 3, 1, None],
-            "b": [1, 2, 3, 4, 5],
-            "c": [2, 3, 4, 5, 6],
-        }
-    )
-
-    right = pl.LazyFrame(
-        {
-            "a": [1, 4, 3, 7, None, None, 1],
-            "c": [2, 3, 4, 5, 6, 7, 8],
-            "d": [6, None, 7, 8, -1, 2, 4],
-        }
-    )
-
-    q = left.join_where(
-        right, pl.col("b") * 2 <= pl.col("a_right"), pl.col("a") < pl.col("c_right")
-    )
-
-    assert_frame_equal(
-        q.select("d").collect().sort("d"),
-        pl.Series("d", [None, None, 7, 8, 8, 8]).to_frame(),
-    )
-
-    assert q.select(pl.len()).collect().item() == 6
-
-    q = (
-        left.join(right, how="cross")
-        .filter(pl.col("b") * 2 <= pl.col("a_right"))
-        .filter(pl.col("a") < pl.col("c_right"))
-    )
-
-    assert_frame_equal(
-        q.select("d").collect().sort("d"),
-        pl.Series("d", [None, None, 7, 8, 8, 8]).to_frame(),
-    )
-
-    assert q.select(pl.len()).collect().item() == 6

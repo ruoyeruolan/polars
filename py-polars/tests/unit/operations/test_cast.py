@@ -698,3 +698,45 @@ def test_cast_python_dtypes() -> None:
     assert s.cast(float).dtype == pl.Float64
     assert s.cast(bool).dtype == pl.Boolean
     assert s.cast(str).dtype == pl.String
+
+
+def test_overflowing_cast_literals_21023() -> None:
+    for no_optimization in [True, False]:
+        assert_frame_equal(
+            (
+                pl.LazyFrame()
+                .select(
+                    pl.lit(pl.Series([128], dtype=pl.Int64)).cast(
+                        pl.Int8, wrap_numerical=True
+                    )
+                )
+                .collect(no_optimization=no_optimization)
+            ),
+            pl.Series([-128], dtype=pl.Int8).to_frame(),
+        )
+
+
+def test_invalid_empty_cast_to_empty_enum() -> None:
+    with pytest.raises(
+        InvalidOperationError,
+        match="cannot cast / initialize Enum without categories present",
+    ):
+        pl.Series([], dtype=pl.Enum)
+
+
+@pytest.mark.parametrize("value", [True, False])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pl.Enum(["a", "b"]),
+        pl.Series(["a", "b"], dtype=pl.Categorical).dtype,
+    ],
+)
+@pytest.mark.usefixtures("test_global_and_local")
+def test_invalid_bool_to_cat(value: bool, dtype: PolarsDataType) -> None:
+    # Enum
+    with pytest.raises(
+        InvalidOperationError,
+        match="cannot cast Boolean to Categorical",
+    ):
+        pl.Series([value]).cast(dtype)

@@ -3,6 +3,10 @@
 SHELL=bash
 BASE ?= main
 
+.PHONY: fix
+fix:
+	@$(MAKE) -s -C .. $@
+
 .PHONY: fmt
 fmt:  ## Run rustfmt and dprint
 	cargo fmt --all
@@ -50,6 +54,7 @@ test:  ## Run tests
 		-p polars-plan \
 		-p polars-row \
 		-p polars-sql \
+		-p polars-testing \
 		-p polars-time \
 		-p polars-utils \
 		-- \
@@ -66,6 +71,7 @@ nextest:  ## Run tests with nextest
 		-p polars-plan \
 		-p polars-row \
 		-p polars-sql \
+		-p polars-testing \
 		-p polars-time \
 		-p polars-utils \
 
@@ -79,6 +85,7 @@ test-doc:  ## Run doc examples
 	    -p polars-lazy \
 	    -p polars-io \
 	    -p polars-core \
+		-p polars-testing \
 		-p polars-sql
 
 .PHONY: bench-save

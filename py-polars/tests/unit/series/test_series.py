@@ -762,6 +762,7 @@ def test_init_nested_tuple() -> None:
     assert s3.dtype == pl.List(pl.Int32)
 
 
+@pytest.mark.may_fail_auto_streaming
 def test_fill_null() -> None:
     s = pl.Series("a", [1, 2, None])
     assert_series_equal(s.fill_null(strategy="forward"), pl.Series("a", [1, 2, 2]))
@@ -1668,6 +1669,25 @@ def test_to_physical() -> None:
     # casting a List(Categorical) results in a List(UInt32)
     s = pl.Series([["cat1"]]).cast(pl.List(pl.Categorical))
     expected = pl.Series([[0]], dtype=pl.List(UInt32))
+    assert_series_equal(s.to_physical(), expected)
+
+
+def test_to_physical_rechunked_21285() -> None:
+    # A series with multiple chunks, dtype is array or list of structs with a
+    # null field (causes rechunking) and a field with a different physical and
+    # logical repr (causes the full body of `to_physical_repr` to run).
+    arr_dtype = pl.Array(pl.Struct({"f0": pl.Time, "f1": pl.Null}), shape=(1,))
+    s = pl.Series("a", [None], arr_dtype)  # content doesn't matter
+    s = s.append(s)
+    expected_arr_dtype = pl.Array(pl.Struct({"f0": Int64, "f1": pl.Null}), shape=(1,))
+    expected = pl.Series("a", [None, None], expected_arr_dtype)
+    assert_series_equal(s.to_physical(), expected)
+
+    list_dtype = pl.List(pl.Struct({"f0": pl.Time, "f1": pl.Null}))
+    s = pl.Series("a", [None], list_dtype)  # content doesn't matter
+    s = s.append(s)
+    expected_list_dtype = pl.List(pl.Struct({"f0": Int64, "f1": pl.Null}))
+    expected = pl.Series("a", [None, None], expected_list_dtype)
     assert_series_equal(s.to_physical(), expected)
 
 

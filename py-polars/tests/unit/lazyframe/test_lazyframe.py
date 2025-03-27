@@ -928,15 +928,6 @@ def test_join_suffix() -> None:
     assert out.columns == ["a", "b", "c", "b_bar", "c_bar"]
 
 
-@pytest.mark.parametrize("no_optimization", [False, True])
-def test_collect_all(df: pl.DataFrame, no_optimization: bool) -> None:
-    lf1 = df.lazy().select(pl.col("int").sum())
-    lf2 = df.lazy().select((pl.col("floats") * 2).sum())
-    out = pl.collect_all([lf1, lf2], no_optimization=no_optimization)
-    assert cast(int, out[0].item()) == 6
-    assert cast(float, out[1].item()) == 12.0
-
-
 def test_collect_unexpected_kwargs(df: pl.DataFrame) -> None:
     with pytest.raises(TypeError, match="unexpected keyword argument"):
         df.lazy().collect(common_subexpr_elim=False)  # type: ignore[call-overload]
@@ -1151,7 +1142,7 @@ def test_lazy_cache_same_key() -> None:
         (pl.col("a") - pl.col("a_mult")).alias("a"), pl.col("c")
     )
     expected = pl.LazyFrame({"a": [-1, 2, 7], "c": ["x", "y", "z"]})
-    assert_frame_equal(result, expected)
+    assert_frame_equal(result, expected, check_row_order=False)
 
 
 @pytest.mark.may_fail_auto_streaming
@@ -1462,3 +1453,39 @@ def test_lf_unnest() -> None:
         ]
     )
     assert_frame_equal(lf.unnest("a", "b").collect(), expected)
+
+
+def test_type_coercion_cast_boolean_after_comparison() -> None:
+    import operator
+
+    lf = pl.LazyFrame({"a": 1, "b": 2})
+
+    for op in [
+        operator.eq,
+        operator.ne,
+        operator.lt,
+        operator.le,
+        operator.gt,
+        operator.ge,
+        pl.Expr.eq_missing,
+        pl.Expr.ne_missing,
+    ]:
+        e = op(pl.col("a"), pl.col("b")).cast(pl.Boolean).alias("o")
+        assert "cast" not in lf.with_columns(e).explain()
+
+        e = op(pl.col("a"), pl.col("b")).cast(pl.Boolean).cast(pl.Boolean).alias("o")
+        assert "cast" not in lf.with_columns(e).explain()
+
+    for op in [operator.and_, operator.or_, operator.xor]:
+        e = op(pl.col("a"), pl.col("b")).cast(pl.Boolean)
+        assert "cast" in lf.with_columns(e).explain()
+
+
+def test_unique_length_multiple_columns() -> None:
+    lf = pl.LazyFrame(
+        {
+            "a": [1, 1, 1, 2, 3],
+            "b": [100, 100, 200, 100, 300],
+        }
+    )
+    assert lf.unique().select(pl.len()).collect().item() == 4

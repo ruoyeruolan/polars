@@ -1,10 +1,10 @@
 use polars_core::prelude::PlHashMap;
 use polars_core::schema::Schema;
-use polars_error::{polars_bail, to_compute_err, PolarsResult};
+use polars_error::{PolarsResult, polars_bail, to_compute_err};
 
-use super::models::{CatalogInfo, NamespaceInfo, TableInfo};
-use super::utils::{do_request, PageWalker};
-use crate::catalog::schema::schema_to_column_info_list;
+use super::models::{CatalogInfo, NamespaceInfo, TableCredentials, TableInfo};
+use super::schema::schema_to_column_info_list;
+use super::utils::{PageWalker, do_request};
 use crate::catalog::unity::models::{ColumnInfo, DataSourceFormat, TableType};
 use crate::impl_page_walk;
 use crate::utils::decode_json_response;
@@ -79,6 +79,29 @@ impl CatalogClient {
         .await?;
 
         let out: TableInfo = decode_json_response(&bytes)?;
+
+        Ok(out)
+    }
+
+    pub async fn get_table_credentials(
+        &self,
+        table_id: &str,
+        write: bool,
+    ) -> PolarsResult<TableCredentials> {
+        let bytes = do_request(
+            self.http_client
+                .post(format!(
+                    "{}{}",
+                    &self.workspace_url, "/api/2.1/unity-catalog/temporary-table-credentials"
+                ))
+                .query(&[
+                    ("table_id", table_id),
+                    ("operation", if write { "READ_WRITE" } else { "READ" }),
+                ]),
+        )
+        .await?;
+
+        let out: TableCredentials = decode_json_response(&bytes)?;
 
         Ok(out)
     }
@@ -305,7 +328,7 @@ impl CatalogClientBuilder {
                 let builder = reqwest::ClientBuilder::new().user_agent("polars");
 
                 let builder = if let Some(bearer_token) = self.bearer_token {
-                    use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, USER_AGENT};
+                    use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 
                     let mut headers = HeaderMap::new();
 

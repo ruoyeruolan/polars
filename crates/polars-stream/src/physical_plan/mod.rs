@@ -4,11 +4,16 @@ use std::sync::Arc;
 use polars_core::frame::DataFrame;
 use polars_core::prelude::{IdxSize, InitHashMaps, PlHashMap, SortMultipleOptions};
 use polars_core::schema::{Schema, SchemaRef};
+use polars_core::utils::arrow::bitmap::Bitmap;
 use polars_error::PolarsResult;
+use polars_io::RowIndex;
+use polars_io::cloud::CloudOptions;
 use polars_ops::frame::JoinArgs;
-use polars_plan::dsl::JoinTypeOptionsIR;
-use polars_plan::plans::hive::HivePartitions;
-use polars_plan::plans::{AExpr, DataFrameUdf, FileInfo, FileScan, ScanSources, IR};
+use polars_plan::dsl::{
+    FileScan, JoinTypeOptionsIR, PartitionVariantIR, ScanSource, ScanSources, SinkOptions,
+};
+use polars_plan::plans::hive::HivePartitionsDf;
+use polars_plan::plans::{AExpr, DataFrameUdf, FileInfo, IR};
 use polars_plan::prelude::expr_ir::ExprIR;
 
 mod fmt;
@@ -24,6 +29,7 @@ use polars_utils::pl_str::PlSmallStr;
 use slotmap::{SecondaryMap, SlotMap};
 pub use to_graph::physical_plan_to_graph;
 
+use crate::nodes::io_sources::multi_scan::MultiscanRowRestriction;
 use crate::physical_plan::lower_expr::ExprCache;
 
 slotmap::new_key_type! {
@@ -47,6 +53,10 @@ impl PhysNode {
             output_schema,
             kind,
         }
+    }
+
+    pub fn kind(&self) -> &PhysNodeKind {
+        &self.kind
     }
 }
 
@@ -126,8 +136,23 @@ pub enum PhysNodeKind {
 
     FileSink {
         path: Arc<PathBuf>,
+        sink_options: SinkOptions,
         file_type: FileType,
         input: PhysStream,
+        cloud_options: Option<CloudOptions>,
+    },
+
+    PartitionSink {
+        path_f_string: Arc<PathBuf>,
+        sink_options: SinkOptions,
+        variant: PartitionVariantIR,
+        file_type: FileType,
+        input: PhysStream,
+        cloud_options: Option<CloudOptions>,
+    },
+
+    SinkMultiple {
+        sinks: Vec<PhysNodeKey>,
     },
 
     /// Generic fallback for (as-of-yet) unsupported streaming mappings.
@@ -167,14 +192,44 @@ pub enum PhysNodeKind {
         input: PhysStream,
     },
 
-    FileScan {
+    MultiScan {
         scan_sources: ScanSources,
+        hive_parts: Option<HivePartitionsDf>,
+        scan_type: Box<FileScan>,
+        allow_missing_columns: bool,
+        include_file_paths: Option<PlSmallStr>,
+
+        /// Schema that all files are coerced into.
+        ///
+        /// - Does include the `row_index`.
+        /// - Does include `include_file_paths`.
+        /// - Does include the hive columns.
+        ///
+        /// Each file may never contain more column than are given in this schema.
+        ///
+        /// Each file should contain exactly all the columns ignoring the hive columns i.f.f.
+        /// `allow_missing_columns == false`.
+        file_schema: SchemaRef,
+
+        /// Selection of `file_schema` columns should to be included in the output morsels.
+        projection: Option<Bitmap>,
+
+        row_restriction: Option<MultiscanRowRestriction>,
+        predicate: Option<ExprIR>,
+        row_index: Option<RowIndex>,
+    },
+    FileScan {
+        scan_source: ScanSource,
         file_info: FileInfo,
-        hive_parts: Option<Arc<Vec<HivePartitions>>>,
         predicate: Option<ExprIR>,
         output_schema: Option<SchemaRef>,
-        scan_type: FileScan,
-        file_options: FileScanOptions,
+        scan_type: Box<FileScan>,
+        file_options: Box<FileScanOptions>,
+    },
+
+    #[cfg(feature = "python")]
+    PythonScan {
+        options: polars_plan::plans::python::PythonOptions,
     },
 
     GroupBy {
@@ -184,6 +239,14 @@ pub enum PhysNodeKind {
     },
 
     EquiJoin {
+        input_left: PhysStream,
+        input_right: PhysStream,
+        left_on: Vec<ExprIR>,
+        right_on: Vec<ExprIR>,
+        args: JoinArgs,
+    },
+
+    SemiAntiJoin {
         input_left: PhysStream,
         input_right: PhysStream,
         left_on: Vec<ExprIR>,
@@ -231,8 +294,11 @@ fn visit_node_inputs_mut(
     while let Some(node) = to_visit.pop() {
         match &mut phys_sm[node].kind {
             PhysNodeKind::InMemorySource { .. }
+            | PhysNodeKind::MultiScan { .. }
             | PhysNodeKind::FileScan { .. }
             | PhysNodeKind::InputIndependentSelect { .. } => {},
+            #[cfg(feature = "python")]
+            PhysNodeKind::PythonScan { .. } => {},
             PhysNodeKind::Select { input, .. }
             | PhysNodeKind::WithRowIndex { input, .. }
             | PhysNodeKind::Reduce { input, .. }
@@ -242,6 +308,7 @@ fn visit_node_inputs_mut(
             | PhysNodeKind::SimpleProjection { input, .. }
             | PhysNodeKind::InMemorySink { input }
             | PhysNodeKind::FileSink { input, .. }
+            | PhysNodeKind::PartitionSink { input, .. }
             | PhysNodeKind::InMemoryMap { input, .. }
             | PhysNodeKind::Map { input, .. }
             | PhysNodeKind::Sort { input, .. }
@@ -257,6 +324,11 @@ fn visit_node_inputs_mut(
                 ..
             }
             | PhysNodeKind::EquiJoin {
+                input_left,
+                input_right,
+                ..
+            }
+            | PhysNodeKind::SemiAntiJoin {
                 input_left,
                 input_right,
                 ..
@@ -283,6 +355,13 @@ fn visit_node_inputs_mut(
                 for input in inputs {
                     rec!(input.node);
                     visit(input);
+                }
+            },
+
+            PhysNodeKind::SinkMultiple { sinks } => {
+                for sink in sinks {
+                    rec!(*sink);
+                    visit(&mut PhysStream::first(*sink));
                 }
             },
         }

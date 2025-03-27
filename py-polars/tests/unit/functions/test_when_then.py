@@ -232,6 +232,7 @@ def test_object_when_then_4702() -> None:
     }
 
 
+@pytest.mark.may_fail_auto_streaming
 def test_comp_categorical_lit_dtype() -> None:
     df = pl.DataFrame(
         data={"column": ["a", "b", "e"], "values": [1, 5, 9]},
@@ -251,7 +252,7 @@ def test_comp_incompatible_enum_dtype() -> None:
 
     with pytest.raises(
         InvalidOperationError,
-        match="conversion from `str` to `enum` failed in column 'literal'",
+        match="conversion from `str` to `enum` failed in column 'scalar'",
     ):
         df.with_columns(
             pl.when(pl.col("a") == "a").then(pl.col("a")).otherwise(pl.lit("c"))
